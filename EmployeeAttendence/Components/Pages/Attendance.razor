@@ -1,0 +1,172 @@
+﻿@page "/attendance"
+@inject IJSRuntime JS
+@* @inject AttendanceDatabase Db *@
+@using System.Text.Json;
+@using Microsoft.Maui.Storage;
+@using System.IO;
+
+<h3 class="mb-3">Employee Attendance</h3>
+
+<p>@statusMessage</p>
+
+<div class="d-flex flex-wrap gap-2 mb-3">
+    <button class="btn btn-primary" @onclick="CaptureLivePhoto">📷 Take Live Photo</button>
+    <button class="btn btn-success" @onclick="CheckIn" disabled="@isCheckedIn">✅ Check In</button>
+    <button class="btn btn-danger" @onclick="CheckOut" disabled="@isCheckedIn == false">⛔ Check Out</button>
+</div>
+
+@if (!string.IsNullOrEmpty(imageDataUrl))
+{
+    <div class="position-relative" style="max-width: 100%; width: 350px;">
+        <img src="@imageDataUrl" class="img-fluid rounded shadow" />
+
+        <div class="position-absolute bottom-0 start-0 text-white w-100 p-2" style="background: rgba(0,0,0,0.5); font-size: 0.9rem;">
+            <div>📍 <strong>@latitude</strong>, <strong>@longitude</strong></div>
+            <div>⏰ @timestamp.ToString("dd-MMM-yyyy HH:mm:ss")</div>
+            @if (!string.IsNullOrEmpty(address))
+            {
+                <div>🏠 <span>@address</span></div>
+            }
+        </div>
+    </div>
+}
+
+
+
+@code {
+    private bool isCheckedIn = false;
+    private string statusMessage = "Please check in.";
+    private string imageDataUrl;
+    private double latitude, longitude;
+    private DateTime timestamp;
+    private string address;
+
+    private async Task<string> GetAddressFromCoordinates(double lat, double lng)
+    {
+        try
+        {
+            using var httpClient = new HttpClient();
+            var url = $"https://nominatim.openstreetmap.org/reverse?format=jsonv2&lat={lat}&lon={lng}";
+            httpClient.DefaultRequestHeaders.UserAgent.TryParseAdd("request"); // Required by Nominatim
+
+            var response = await httpClient.GetAsync(url);
+            if (response.IsSuccessStatusCode)
+            {
+                var json = await response.Content.ReadAsStringAsync();
+                var result = JsonDocument.Parse(json);
+                if (result.RootElement.TryGetProperty("display_name", out var displayName))
+                {
+                    return displayName.GetString();
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Reverse geocode failed: {ex.Message}");
+        }
+        return "Address not found";
+    }
+
+
+
+    private async Task CaptureLivePhoto()
+    {
+        try
+        {
+            // ✅ Get GPS location first
+            var locationStatus = await Permissions.CheckStatusAsync<Permissions.LocationWhenInUse>();
+            if (locationStatus != PermissionStatus.Granted)
+                locationStatus = await Permissions.RequestAsync<Permissions.LocationWhenInUse>();
+
+            if (locationStatus == PermissionStatus.Granted)
+            {
+                var location = await Geolocation.GetLastKnownLocationAsync();
+                if (location == null)
+                {
+                    location = await Geolocation.GetLocationAsync(new GeolocationRequest
+                        {
+                            DesiredAccuracy = GeolocationAccuracy.High,
+                            Timeout = TimeSpan.FromSeconds(10)
+                        });
+                }
+
+                if (location != null)
+                {
+
+                    latitude = location.Latitude;
+                    longitude = location.Longitude;
+
+                    address = await GetAddressFromCoordinates(latitude, longitude);
+                }
+            }
+
+            // ✅ Get current time
+            timestamp = DateTime.Now;
+
+            // ✅ Camera permission
+            var cameraStatus = await Permissions.CheckStatusAsync<Permissions.Camera>();
+            if (cameraStatus != PermissionStatus.Granted)
+                cameraStatus = await Permissions.RequestAsync<Permissions.Camera>();
+
+            if (cameraStatus == PermissionStatus.Granted)
+            {
+                var photo = await MediaPicker.CapturePhotoAsync();
+
+                if (photo != null)
+                {
+                    using var stream = await photo.OpenReadAsync();
+                    using var ms = new MemoryStream();
+                    await stream.CopyToAsync(ms);
+                    var imageBytes = ms.ToArray();
+
+                    imageDataUrl = $"data:image/jpeg;base64,{Convert.ToBase64String(imageBytes)}";
+                }
+            }
+            else
+            {
+                Console.WriteLine("Camera permission denied.");
+            }
+        }
+        catch (Exception ex)
+        {
+            Console.WriteLine($"Capture error: {ex.Message}");
+        }
+    }
+
+
+
+    private async Task CheckIn()
+    {
+        isCheckedIn = true;
+        statusMessage = $"Checked in at {DateTime.Now:T}";
+        await Save("IN");
+    }
+
+    private async Task CheckOut()
+    {
+        isCheckedIn = false;
+        statusMessage = $"Checked out at {DateTime.Now:T}";
+        await Save("OUT");
+    }
+
+    private async Task Save(string type)
+    {
+        // var entry = new AttendanceEntry
+        // {
+        //     EmployeeId = "EMP001",
+        //     Timestamp = DateTime.Now,
+        //     Type = type,
+        //     ImageBase64 = imageDataUrl,
+        //     Latitude = latitude,
+        //     Longitude = longitude
+        // };
+
+        // await Db.SaveEntryAsync(entry);
+    }
+
+    public class Location
+    {
+        public double Latitude { get; set; }
+        public double Longitude { get; set; }
+    }
+}
